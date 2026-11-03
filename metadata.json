@@ -1,0 +1,6 @@
+{
+  "name": "MOUSE",
+  "description": "My Own Ultimate Smart Entity — Complete Offline-First AI Personal Assistant with local memory, research, and multi-provider intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
