@@ -17,9 +17,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -81,7 +81,7 @@ fun KnowledgeScreen(
         ) {
             // Header
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.MenuBook, contentDescription = null, tint = CyanPrimary, modifier = Modifier.size(28.dp))
+                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = CyanPrimary, modifier = Modifier.size(28.dp))
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(

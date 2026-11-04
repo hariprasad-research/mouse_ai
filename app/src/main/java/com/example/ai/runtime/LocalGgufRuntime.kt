@@ -13,12 +13,22 @@ import net.ladenthin.llama.parameters.ModelParameters
 import java.io.File
 
 data class RuntimeMetrics(
-    val loadTimeMs: Long = 0L,
+    val modelLoadDurationMs: Long = 0L,
+    val memoryBeforeLoadMb: Long = 0L,
+    val memoryAfterLoadMb: Long = 0L,
+    val memoryIncreaseMb: Long = 0L,
     val timeToFirstTokenMs: Long = 0L,
     val tokensPerSecond: Double = 0.0,
     val totalTokens: Int = 0,
-    val peakMemoryMb: Long = 0L
-)
+    val totalGenerationDurationMs: Long = 0L,
+    val peakMemoryDuringInferenceMb: Long = 0L,
+    val memoryAfterUnloadMb: Long = 0L,
+    val lastError: String? = null
+) {
+    // Backward compatibility aliases
+    val loadTimeMs: Long get() = modelLoadDurationMs
+    val peakMemoryMb: Long get() = peakMemoryDuringInferenceMb
+}
 
 data class GenerationChunk(
     val tokenText: String,
@@ -31,6 +41,8 @@ data class ModelLoadResult(
     val modelName: String,
     val loadTimeMs: Long,
     val memoryUsedMb: Long,
+    val memoryBeforeMb: Long = 0L,
+    val memoryAfterMb: Long = 0L,
     val errorMessage: String? = null
 )
 
@@ -45,6 +57,10 @@ class LocalGgufRuntime {
 
     @Volatile
     var activeModelName: String? = null
+        private set
+
+    @Volatile
+    var isActivelyGenerating: Boolean = false
         private set
 
     val isModelLoaded: Boolean
@@ -87,25 +103,42 @@ class LocalGgufRuntime {
             val memAfter = getProcessMemoryMb()
             val memDelta = (memAfter - memBefore).coerceAtLeast(0L)
 
-            Log.i("LocalGgufRuntime", "Model ${modelFile.name} loaded successfully in ${loadTime}ms (Mem: ${memDelta}MB)")
+            lastMetrics = lastMetrics.copy(
+                modelLoadDurationMs = loadTime,
+                memoryBeforeLoadMb = memBefore,
+                memoryAfterLoadMb = memAfter,
+                memoryIncreaseMb = memDelta,
+                lastError = null
+            )
+
+            Log.i("LocalGgufRuntime", "Model ${modelFile.name} loaded in ${loadTime}ms (RAM: ${memBefore}MB -> ${memAfter}MB, +${memDelta}MB)")
 
             ModelLoadResult(
                 success = true,
                 modelName = modelFile.name,
                 loadTimeMs = loadTime,
-                memoryUsedMb = memDelta
+                memoryUsedMb = memDelta,
+                memoryBeforeMb = memBefore,
+                memoryAfterMb = memAfter
             )
         } catch (e: Throwable) {
             llamaModel = null
             activeModelPath = null
             activeModelName = null
-            Log.e("LocalGgufRuntime", "Failed to load GGUF model: ${e.message}", e)
+            val loadErr = e.localizedMessage ?: "Native model load failed"
+            lastMetrics = lastMetrics.copy(
+                modelLoadDurationMs = System.currentTimeMillis() - startTime,
+                memoryBeforeLoadMb = memBefore,
+                memoryAfterLoadMb = getProcessMemoryMb(),
+                lastError = loadErr
+            )
+            Log.e("LocalGgufRuntime", "Failed to load GGUF model: $loadErr", e)
             ModelLoadResult(
                 success = false,
                 modelName = modelFile.name,
                 loadTimeMs = System.currentTimeMillis() - startTime,
                 memoryUsedMb = 0L,
-                errorMessage = e.localizedMessage ?: "Unknown load error"
+                errorMessage = loadErr
             )
         }
     }
@@ -120,7 +153,11 @@ class LocalGgufRuntime {
             llamaModel = null
             activeModelPath = null
             activeModelName = null
+            isActivelyGenerating = false
             System.gc()
+            val memAfterUnload = getProcessMemoryMb()
+            lastMetrics = lastMetrics.copy(memoryAfterUnloadMb = memAfterUnload)
+            Log.i("LocalGgufRuntime", "Model unloaded. Process RAM after GC: ${memAfterUnload}MB")
         }
     }
 
@@ -132,11 +169,13 @@ class LocalGgufRuntime {
     ): Pair<String, RuntimeMetrics> = withContext(Dispatchers.IO) {
         val model = llamaModel ?: throw IllegalStateException("No GGUF model is loaded into runtime.")
 
+        isActivelyGenerating = true
         val startTime = System.currentTimeMillis()
         var firstTokenMs = 0L
         var tokenCount = 0
         val sb = StringBuilder()
         val memBefore = getProcessMemoryMb()
+        var peakMem = memBefore
 
         val inferenceParams = InferenceParameters.of(prompt)
             .withNPredict(maxTokens)
@@ -151,23 +190,35 @@ class LocalGgufRuntime {
                 }
                 tokenCount++
                 sb.append(output.text)
+
+                // Sample peak memory every 10 tokens
+                if (tokenCount % 10 == 0) {
+                    val currentMem = getProcessMemoryMb()
+                    if (currentMem > peakMem) peakMem = currentMem
+                }
+
                 if (output.stop) break
             }
         } catch (e: Exception) {
             Log.e("LocalGgufRuntime", "Inference error: ${e.message}", e)
+            lastMetrics = lastMetrics.copy(lastError = e.localizedMessage)
             throw e
+        } finally {
+            isActivelyGenerating = false
         }
 
         val totalTime = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
         val tokensPerSec = if (totalTime > 0) (tokenCount.toDouble() * 1000.0) / totalTime else 0.0
-        val peakMem = getProcessMemoryMb().coerceAtLeast(memBefore)
+        val currentMem = getProcessMemoryMb()
+        if (currentMem > peakMem) peakMem = currentMem
 
-        val metrics = RuntimeMetrics(
-            loadTimeMs = 0L,
+        val metrics = lastMetrics.copy(
             timeToFirstTokenMs = firstTokenMs,
             tokensPerSecond = tokensPerSec,
             totalTokens = tokenCount,
-            peakMemoryMb = peakMem
+            totalGenerationDurationMs = totalTime,
+            peakMemoryDuringInferenceMb = peakMem,
+            lastError = null
         )
         lastMetrics = metrics
         Pair(sb.toString().trim(), metrics)
@@ -181,42 +232,57 @@ class LocalGgufRuntime {
     ): Flow<GenerationChunk> = flow {
         val model = llamaModel ?: throw IllegalStateException("No GGUF model is loaded into runtime.")
 
+        isActivelyGenerating = true
         val startTime = System.currentTimeMillis()
         var firstTokenMs = 0L
         var tokenCount = 0
         val memBefore = getProcessMemoryMb()
+        var peakMem = memBefore
 
         val inferenceParams = InferenceParameters.of(prompt)
             .withNPredict(maxTokens)
             .withTemperature(temperature)
             .withTopP(topP)
 
-        val iterable = model.generate(inferenceParams)
-        for (output in iterable) {
-            if (tokenCount == 0) {
-                firstTokenMs = System.currentTimeMillis() - startTime
+        try {
+            val iterable = model.generate(inferenceParams)
+            for (output in iterable) {
+                if (tokenCount == 0) {
+                    firstTokenMs = System.currentTimeMillis() - startTime
+                }
+                tokenCount++
+                emit(GenerationChunk(tokenText = output.text, isComplete = false))
+
+                if (tokenCount % 10 == 0) {
+                    val currentMem = getProcessMemoryMb()
+                    if (currentMem > peakMem) peakMem = currentMem
+                }
+
+                if (output.stop) break
             }
-            tokenCount++
-            emit(GenerationChunk(tokenText = output.text, isComplete = false))
-            if (output.stop) break
+        } finally {
+            isActivelyGenerating = false
         }
 
         val totalTime = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
         val tokensPerSec = if (totalTime > 0) (tokenCount.toDouble() * 1000.0) / totalTime else 0.0
-        val peakMem = getProcessMemoryMb().coerceAtLeast(memBefore)
+        val currentMem = getProcessMemoryMb()
+        if (currentMem > peakMem) peakMem = currentMem
 
-        val finalMetrics = RuntimeMetrics(
+        val finalMetrics = lastMetrics.copy(
             timeToFirstTokenMs = firstTokenMs,
             tokensPerSecond = tokensPerSec,
             totalTokens = tokenCount,
-            peakMemoryMb = peakMem
+            totalGenerationDurationMs = totalTime,
+            peakMemoryDuringInferenceMb = peakMem,
+            lastError = null
         )
         lastMetrics = finalMetrics
 
         emit(GenerationChunk(tokenText = "", isComplete = true, metrics = finalMetrics))
     }.flowOn(Dispatchers.IO)
 
-    private fun getProcessMemoryMb(): Long {
+    fun getProcessMemoryMb(): Long {
         val pssKb = Debug.getPss()
         return if (pssKb > 0) pssKb / 1024L else (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024L * 1024L)
     }

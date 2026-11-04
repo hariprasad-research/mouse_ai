@@ -154,7 +154,10 @@ fun MouseMainApp(viewModel: MouseViewModel) {
                             uiState = uiState,
                             onSelectProvider = { pId -> viewModel.setPreferredProvider(pId) },
                             onSaveKey = { pId, key -> viewModel.storeApiKey(pId, key) },
-                            getMaskedKey = { pId -> viewModel.getMaskedApiKey(pId) }
+                            getMaskedKey = { pId -> viewModel.getMaskedApiKey(pId) },
+                            onSaveOpenAiConfig = { endpoint, model, key ->
+                                viewModel.saveOpenAiConfig(endpoint, model, key)
+                            }
                         )
                     }
                     MouseScreen.PERMISSIONS -> {

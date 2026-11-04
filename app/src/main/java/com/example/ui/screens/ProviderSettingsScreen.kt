@@ -64,12 +64,13 @@ fun ProviderSettingsScreen(
     onSelectProvider: (String) -> Unit,
     onSaveKey: (providerId: String, key: String) -> Unit,
     getMaskedKey: (providerId: String) -> String,
+    onSaveOpenAiConfig: (endpoint: String, model: String, key: String?) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var geminiKeyInput by remember { mutableStateOf("") }
     var openAiKeyInput by remember { mutableStateOf("") }
-    var openAiEndpointInput by remember { mutableStateOf("https://api.openai.com/v1") }
-    var openAiModelInput by remember { mutableStateOf("gpt-4o-mini") }
+    var openAiEndpointInput by remember(uiState.openAiEndpoint) { mutableStateOf(uiState.openAiEndpoint) }
+    var openAiModelInput by remember(uiState.openAiModel) { mutableStateOf(uiState.openAiModel) }
 
     Column(
         modifier = modifier
@@ -258,12 +259,14 @@ fun ProviderSettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = {
-                        if (openAiKeyInput.isNotBlank()) {
-                            onSaveKey("openai_compatible", openAiKeyInput)
-                            openAiKeyInput = ""
-                        }
+                        onSaveOpenAiConfig(
+                            openAiEndpointInput.trim(),
+                            openAiModelInput.trim(),
+                            openAiKeyInput.trim().ifEmpty { null }
+                        )
+                        openAiKeyInput = ""
                     },
-                    enabled = openAiKeyInput.isNotBlank(),
+                    enabled = openAiEndpointInput.isNotBlank() && openAiModelInput.isNotBlank(),
                     modifier = Modifier.align(Alignment.End),
                     colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = SurfaceDark)
                 ) {

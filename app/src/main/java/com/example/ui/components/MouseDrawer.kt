@@ -19,13 +19,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
@@ -86,9 +86,9 @@ fun MouseDrawer(
     onCloseDrawer: () -> Unit
 ) {
     val items = listOf(
-        DrawerItem(MouseScreen.CHAT, "Chat / Terminal", Icons.Default.Chat, "nav_chat"),
+        DrawerItem(MouseScreen.CHAT, "Chat / Terminal", Icons.AutoMirrored.Filled.Chat, "nav_chat"),
         DrawerItem(MouseScreen.MEMORY, "Personal Memory", Icons.Default.Psychology, "nav_memory"),
-        DrawerItem(MouseScreen.KNOWLEDGE, "Knowledge Base", Icons.Default.MenuBook, "nav_knowledge"),
+        DrawerItem(MouseScreen.KNOWLEDGE, "Knowledge Base", Icons.AutoMirrored.Filled.MenuBook, "nav_knowledge"),
         DrawerItem(MouseScreen.RESEARCH, "Independent Research", Icons.Default.TravelExplore, "nav_research"),
         DrawerItem(MouseScreen.PROVIDERS, "AI Provider Settings", Icons.Default.Tune, "nav_providers"),
         DrawerItem(MouseScreen.PERMISSIONS, "Internet Permission Gate", Icons.Default.Shield, "nav_permissions"),

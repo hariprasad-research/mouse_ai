@@ -39,7 +39,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PublicOff
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -376,7 +376,7 @@ fun MessageBubble(
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.VolumeUp,
+                                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                     contentDescription = "Read Aloud",
                                     tint = TextSecondary,
                                     modifier = Modifier.size(16.dp)

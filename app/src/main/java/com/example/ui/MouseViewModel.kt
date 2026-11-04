@@ -139,8 +139,23 @@ class MouseViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Observe network audit tracker events
+        viewModelScope.launch {
+            com.example.security.NetworkAuditTracker.events.collectLatest { events ->
+                _uiState.update { it.copy(networkAuditEvents = events) }
+            }
+        }
+
         // Initial hardware audit & telemetry
         refreshHardwareAndTelemetry()
+
+        // Initial OpenAI-compatible config from persistent storage
+        _uiState.update {
+            it.copy(
+                openAiEndpoint = mouseEngine.openAiProvider.endpointUrl,
+                openAiModel = mouseEngine.openAiProvider.modelName
+            )
+        }
     }
 
     private fun observeActiveMessages() {
@@ -248,6 +263,25 @@ class MouseViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getMaskedApiKey(providerId: String): String {
         return keystoreManager.getMaskedApiKey(providerId)
+    }
+
+    fun saveOpenAiConfig(endpoint: String, model: String, key: String? = null) {
+        if (endpoint.isNotBlank()) {
+            mouseEngine.openAiProvider.endpointUrl = endpoint
+        }
+        if (model.isNotBlank()) {
+            mouseEngine.openAiProvider.modelName = model
+        }
+        if (!key.isNullOrBlank()) {
+            keystoreManager.storeApiKey("openai_compatible", key.trim())
+        }
+        _uiState.update {
+            it.copy(
+                openAiEndpoint = mouseEngine.openAiProvider.endpointUrl,
+                openAiModel = mouseEngine.openAiProvider.modelName
+            )
+        }
+        showToast("OpenAI-compatible configuration saved.")
     }
 
     // Memories

@@ -45,5 +45,8 @@ data class MouseUiState(
     val auditLogs: List<SecurityAuditEntity> = emptyList(),
     val managedModels: List<com.example.ai.runtime.ManagedModel> = emptyList(),
     val activeModelMetrics: com.example.ai.runtime.RuntimeMetrics? = null,
+    val networkAuditEvents: List<com.example.security.NetworkAuditEvent> = emptyList(),
+    val openAiEndpoint: String = "https://api.openai.com/v1",
+    val openAiModel: String = "gpt-4o-mini",
     val toastMessage: String? = null
 )

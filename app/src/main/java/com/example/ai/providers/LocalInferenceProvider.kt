@@ -7,18 +7,18 @@ import android.os.Environment
 import android.os.StatFs
 import android.util.Log
 import com.example.ai.AiProvider
+import com.example.ai.ChatMessage
 import com.example.ai.GenerationRequest
 import com.example.ai.GenerationResult
 import com.example.ai.ProviderAvailability
 import com.example.ai.runtime.LocalGgufRuntime
 import com.example.ai.runtime.LocalModelManager
-import com.example.ai.runtime.RuntimeMetrics
+import com.example.ai.runtime.ModelRuntimeStatus
 import com.example.data.local.dao.KnowledgeDao
 import com.example.data.local.dao.MemoryDao
 import com.example.data.local.dao.ResearchDao
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Locale
 
 data class HardwareAudit(
@@ -34,8 +34,8 @@ data class HardwareAudit(
 
 enum class DeviceHardwareTier {
     LIGHTWEIGHT,    // < 3GB RAM -> 0.3B - 0.5B models (e.g. SmolLM2 360M Q4)
-    BALANCED,       // 3GB - 6GB RAM -> 1B - 1.5B models (e.g. Qwen2.5 1.5B Q4)
-    HIGH_PERFORMANCE// > 6GB RAM -> 3B models (e.g. Llama 3.2 3B Q4)
+    BALANCED,       // 3GB - 6GB RAM -> 1B - 1.5B models (e.g. Llama 3.2 1B / Gemma 3 1B)
+    HIGH_PERFORMANCE// > 6GB RAM -> 3B+ models
 }
 
 class LocalInferenceProvider(
@@ -77,9 +77,9 @@ class LocalInferenceProvider(
         }
 
         val recommendedModel = when (tier) {
-            DeviceHardwareTier.LIGHTWEIGHT -> "SmolLM2-360M-Instruct-Q4_K_M"
-            DeviceHardwareTier.BALANCED -> "Qwen2.5-0.5B-Instruct-Q4_K_M"
-            DeviceHardwareTier.HIGH_PERFORMANCE -> "Llama-3.2-1B-Instruct-Q4_K_M"
+            DeviceHardwareTier.LIGHTWEIGHT -> "SmolLM2 360M Instruct"
+            DeviceHardwareTier.BALANCED -> "Llama 3.2 1B Instruct / Gemma 3 1B IT"
+            DeviceHardwareTier.HIGH_PERFORMANCE -> "Llama 3.2 1B Instruct"
         }
 
         return HardwareAudit(
@@ -100,9 +100,9 @@ class LocalInferenceProvider(
         return ProviderAvailability(
             isAvailable = true,
             reason = if (isLoaded) {
-                "Active GGUF Model: ${runtime.activeModelName} (${audit.availRamMb}MB RAM free)"
+                "Active GGUF Model: ${runtime.activeModelName} (${audit.availRamMb} MB RAM free)"
             } else {
-                "Local Knowledge Component Active (${audit.cpuCores} cores, ${audit.availRamMb}MB RAM free)"
+                "Local Knowledge Component Active (${audit.cpuCores} cores, ${audit.availRamMb} MB RAM free)"
             },
             latencyMs = if (isLoaded) 15L else 5L
         )
@@ -111,7 +111,6 @@ class LocalInferenceProvider(
     override suspend fun generate(request: GenerationRequest): GenerationResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val userQuery = request.messages.lastOrNull { it.role == "user" }?.content?.trim() ?: ""
-        val lower = userQuery.lowercase(Locale.ROOT)
 
         val sourcesUsed = mutableListOf<String>()
 
@@ -140,41 +139,30 @@ class LocalInferenceProvider(
 
         // Check if a genuine GGUF Neural Model is currently loaded
         if (runtime.isModelLoaded) {
-            sourcesUsed.add("Local GGUF Neural Model: ${runtime.activeModelName}")
+            val activeModel = modelManager.modelsState.value.firstOrNull {
+                it.status == ModelRuntimeStatus.LOADED_ACTIVE || it.status == ModelRuntimeStatus.ACTIVELY_GENERATING
+            }
+            val activeModelName = runtime.activeModelName ?: "GGUF Model"
+            sourcesUsed.add("Local GGUF Neural Model: $activeModelName")
 
-            // Format Chat Prompt with System Directive and Recalled Memories
-            val promptBuilder = StringBuilder()
-            promptBuilder.append("<|im_start|>system\n")
-            promptBuilder.append("You are MOUSE (My Own Ultimate Smart Entity), a personalized, honest, and security-conscious AI assistant running 100% on-device on Android.\n")
-            if (relevantMemories.isNotEmpty()) {
-                promptBuilder.append("RECALLED OWNER MEMORIES:\n")
-                for (m in relevantMemories) {
-                    promptBuilder.append("- [${m.key}]: ${m.content}\n")
-                }
-            }
-            if (relevantKnowledge.isNotEmpty()) {
-                promptBuilder.append("LOCAL KNOWLEDGE CONTEXT:\n")
-                for (k in relevantKnowledge) {
-                    promptBuilder.append("- [${k.title}]: ${k.content}\n")
-                }
-            }
-            promptBuilder.append("<|im_end|>\n")
-
-            for (msg in request.messages.takeLast(6)) {
-                promptBuilder.append("<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n")
-            }
-            promptBuilder.append("<|im_start|>assistant\n")
+            val systemDirective = buildSystemDirective(relevantMemories, relevantKnowledge)
+            val prompt = formatChatPrompt(activeModel?.id, systemDirective, request.messages)
 
             return@withContext try {
                 val (rawText, metrics) = runtime.generateSync(
-                    prompt = promptBuilder.toString(),
+                    prompt = prompt,
                     maxTokens = 256,
                     temperature = request.temperature
                 )
 
-                // Clean possible trailing tokens
-                val cleanText = rawText.substringBefore("<|im_end|>").trim()
+                // Clean family-specific stop tokens
+                val cleanText = cleanStopTokens(rawText, activeModel?.id)
                 val latency = System.currentTimeMillis() - startTime
+
+                // Update active model benchmark metrics
+                activeModel?.id?.let { modelId ->
+                    modelManager.updateActiveGenerationMetrics(modelId, metrics.peakMemoryMb, metrics.tokensPerSecond)
+                }
 
                 GenerationResult(
                     content = cleanText,
@@ -192,6 +180,87 @@ class LocalInferenceProvider(
 
         // When no GGUF binary is loaded into memory, use local knowledge retrieval and reasoning component
         fallbackKnowledgeGeneration(userQuery, sourcesUsed, startTime)
+    }
+
+    private fun buildSystemDirective(
+        memories: List<com.example.data.local.entities.MemoryEntity>,
+        knowledge: List<com.example.data.local.entities.KnowledgeEntity>
+    ): String {
+        return buildString {
+            append("You are MOUSE (My Own Ultimate Smart Entity), a personalized, honest, and security-conscious AI assistant running 100% on-device on Android.\n")
+            if (memories.isNotEmpty()) {
+                append("RECALLED OWNER MEMORIES:\n")
+                for (m in memories) {
+                    append("- [${m.key}]: ${m.content}\n")
+                }
+            }
+            if (knowledge.isNotEmpty()) {
+                append("LOCAL KNOWLEDGE CONTEXT:\n")
+                for (k in knowledge) {
+                    append("- [${k.title}]: ${k.content}\n")
+                }
+            }
+        }
+    }
+
+    private fun formatChatPrompt(modelId: String?, systemDirective: String, messages: List<ChatMessage>): String {
+        val historyTurns = messages.takeLast(8)
+        return when (modelId) {
+            "llama32_1b" -> {
+                // Llama 3 prompt format
+                buildString {
+                    append("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n")
+                    append(systemDirective)
+                    append("<|eot_id|>")
+                    for (msg in historyTurns) {
+                        append("<|start_header_id|>${msg.role}<|end_header_id|>\n\n")
+                        append(msg.content)
+                        append("<|eot_id|>")
+                    }
+                    append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+                }
+            }
+            "gemma3_1b" -> {
+                // Gemma 3 prompt format
+                buildString {
+                    append("<start_of_turn>user\n")
+                    append("[SYSTEM INSTRUCTION]\n")
+                    append(systemDirective)
+                    append("\n[END SYSTEM INSTRUCTION]\n\n")
+                    for ((index, msg) in historyTurns.withIndex()) {
+                        if (index == 0 && msg.role == "user") {
+                            append(msg.content)
+                            append("<end_of_turn>\n")
+                        } else {
+                            val roleTag = if (msg.role == "user") "user" else "model"
+                            append("<start_of_turn>$roleTag\n${msg.content}<end_of_turn>\n")
+                        }
+                    }
+                    append("<start_of_turn>model\n")
+                }
+            }
+            else -> {
+                // Default ChatML format (SmolLM2 / Qwen)
+                buildString {
+                    append("<|im_start|>system\n")
+                    append(systemDirective)
+                    append("<|im_end|>\n")
+                    for (msg in historyTurns) {
+                        append("<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n")
+                    }
+                    append("<|im_start|>assistant\n")
+                }
+            }
+        }
+    }
+
+    private fun cleanStopTokens(rawText: String, modelId: String?): String {
+        var text = rawText
+        val stopTokens = listOf("<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>", "</s>")
+        for (token in stopTokens) {
+            text = text.substringBefore(token)
+        }
+        return text.trim()
     }
 
     private fun fallbackKnowledgeGeneration(
@@ -237,7 +306,7 @@ class LocalInferenceProvider(
             else -> {
                 "I have processed your query: *\"$userQuery\"* using **MOUSE Local Knowledge Component**.\n\n" +
                 "• **Neural LLM Status:** No GGUF model is currently loaded in memory.\n" +
-                "• **Available Options:** You can download and load a compact GGUF model (such as **SmolLM2 360M Instruct Q4_K_M**) from the **Hardware & Local AI** screen for full on-device neural text generation.\n" +
+                "• **Available Candidates:** You can download and load a model (**SmolLM2 360M**, **Llama 3.2 1B**, or **Gemma 3 1B**) from the **Hardware & Local AI** screen for full on-device neural text generation.\n" +
                 "• **Network Status:** Internet access is currently **OFF** (enforced by owner security policy)."
             }
         }

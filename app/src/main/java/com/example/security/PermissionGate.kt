@@ -67,9 +67,22 @@ class PermissionGate private constructor(context: Context) {
     /**
      * Strict check before any network operation. Throws SecurityException if Internet is blocked.
      */
-    fun assertNetworkAllowed(feature: String) {
+    fun assertNetworkAllowed(feature: String, destinationUrl: String = "External Network") {
         if (!_state.value.isInternetEnabled) {
+            NetworkAuditTracker.recordEvent(
+                caller = feature,
+                destination = destinationUrl,
+                wasBlocked = true,
+                policyReason = "Internet Permission OFF"
+            )
             throw SecurityException("MOUSE Internet Permission Gate blocked network call for '$feature'. Internet access is currently disabled by owner policy.")
+        } else {
+            NetworkAuditTracker.recordEvent(
+                caller = feature,
+                destination = destinationUrl,
+                wasBlocked = false,
+                policyReason = "Owner Internet Permission ON"
+            )
         }
     }
 

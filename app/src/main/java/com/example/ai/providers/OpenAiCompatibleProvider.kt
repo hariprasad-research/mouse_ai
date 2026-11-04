@@ -30,12 +30,22 @@ class OpenAiCompatibleProvider(
     private val prefs = context.getSharedPreferences("mouse_openai_prefs", Context.MODE_PRIVATE)
 
     var endpointUrl: String
-        get() = prefs.getString("endpoint_url", "https://api.openai.com/v1") ?: "https://api.openai.com/v1"
-        set(value) = prefs.edit().putString("endpoint_url", value.trimEnd('/')).apply()
+        get() = prefs.getString("endpoint_url", "https://api.openai.com/v1").takeUnless { it.isNullOrBlank() } ?: "https://api.openai.com/v1"
+        set(value) {
+            val sanitized = value.trim().trimEnd('/')
+            if (sanitized.isNotBlank()) {
+                prefs.edit().putString("endpoint_url", sanitized).apply()
+            }
+        }
 
     var modelName: String
-        get() = prefs.getString("model_name", "gpt-4o-mini") ?: "gpt-4o-mini"
-        set(value) = prefs.edit().putString("model_name", value.trim()).apply()
+        get() = prefs.getString("model_name", "gpt-4o-mini").takeUnless { it.isNullOrBlank() } ?: "gpt-4o-mini"
+        set(value) {
+            val sanitized = value.trim()
+            if (sanitized.isNotBlank()) {
+                prefs.edit().putString("model_name", sanitized).apply()
+            }
+        }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
